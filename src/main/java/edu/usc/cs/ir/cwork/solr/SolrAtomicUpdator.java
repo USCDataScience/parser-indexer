@@ -208,7 +208,7 @@ public class SolrAtomicUpdator {
                     }
                 }
                 if (debug) {
-                    LOG.info("Updates  for {} = ", id, updates);
+                    LOG.info("Updates  for {} = {}", id, updates);
                 }
                 if (!updates.isEmpty()) {
                     return res;
