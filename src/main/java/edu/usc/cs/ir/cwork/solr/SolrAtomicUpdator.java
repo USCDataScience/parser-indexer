@@ -168,7 +168,7 @@ public class SolrAtomicUpdator {
                         Metadata md = new Metadata();
                         try(InputStream stream = new FileInputStream(content)){
                             parser.parse(stream, new BodyContentHandler(), md, ctx);
-                            res.setField("title", new HashMap<String, Object>(){{put("title", md.get("title"));}});
+                            res.setField("title", new HashMap<String, Object>(){{put("set", md.get("title"));}});
                             updates.add("title");
                         } catch (Exception e) {
                             e.printStackTrace();
