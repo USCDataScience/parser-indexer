@@ -160,10 +160,10 @@ public class SolrAtomicUpdator {
                 SolrInputDocument res = new SolrInputDocument();
                 String id = doc.getFieldValue("id").toString();
                 res.setField("id", id);
-                Set<String> updates = new HashSet<String>();
+                Set<String> updates = new HashSet<>();
                 if (doc.containsKey("contentType")
                         && doc.getFieldValue("contentType").toString().contains("ml")) {  //for xml or html
-                    File content = new File(id);
+                    File content = new File(id.replaceFirst("^file:", ""));
                     if (content.exists()) {
                         Metadata md = new Metadata();
                         try(InputStream stream = new FileInputStream(content)){
