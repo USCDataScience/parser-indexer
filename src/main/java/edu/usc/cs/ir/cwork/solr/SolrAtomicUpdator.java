@@ -26,9 +26,11 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -158,7 +160,7 @@ public class SolrAtomicUpdator {
                 SolrInputDocument res = new SolrInputDocument();
                 String id = doc.getFieldValue("id").toString();
                 res.setField("id", id);
-
+                Set<String> updates = new HashSet<String>();
                 if (doc.containsKey("contentType")
                         && doc.getFieldValue("contentType").toString().contains("ml")) {  //for xml or html
                     File content = new File(id);
@@ -167,9 +169,12 @@ public class SolrAtomicUpdator {
                         try(InputStream stream = new FileInputStream(content)){
                             parser.parse(stream, new BodyContentHandler(), md, ctx);
                             res.setField("title", new HashMap<String, Object>(){{put("title", md.get("title"));}});
+                            updates.add("title");
                         } catch (Exception e) {
                             e.printStackTrace();
                         }
+                    } else {
+                        LOG.warn("File {} not found", content);
                     }
                 }
                 keyMap.keySet().stream()
@@ -178,6 +183,7 @@ public class SolrAtomicUpdator {
                             String newKey = keyMap.get(key);
                             res.setField(newKey, new HashMap<String, Object>() {{
                                 put("set", doc.getFieldValues(key));
+                                updates.add(key);
                             }});
                         });
                 if (doc.containsKey("dates")) {
@@ -194,9 +200,21 @@ public class SolrAtomicUpdator {
                                 }})
                             .filter(d -> d != null)
                             .collect(Collectors.toList());
-                    res.setField("dates_aggr", new HashMap<String, Object>(){{put("set", dates);}});
+                    if (!dates.isEmpty()) {
+                        res.setField("dates_aggr", new HashMap<String, Object>() {{
+                            put("set", dates);
+                        }});
+                        updates.add("dates");
+                    }
                 }
-                return res;
+                if (debug) {
+                    LOG.info("Updates  for {} = ", id, updates);
+                }
+                if (!updates.isEmpty()) {
+                    return res;
+                } else {
+                    return null;
+                }
             }
         };
     }
