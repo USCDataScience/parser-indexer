@@ -33,28 +33,27 @@ public class SolrDocIterator implements Iterator<SolrDocument> {
 
     public SolrDocIterator(String solrUrl, String queryStr, int start, int rows,
                            String...fields){
-        this(new HttpSolrServer(solrUrl), queryStr, start, rows, fields);
+        this(new HttpSolrServer(solrUrl), queryStr, start, rows, null, fields);
     }
 
     public SolrDocIterator(SolrServer solr, String queryStr, String...fields) {
-        this(solr, queryStr, DEF_START, DEF_ROWS, fields);
+        this(solr, queryStr, DEF_START, DEF_ROWS, null, fields);
     }
 
-    public SolrDocIterator(SolrServer solr, String queryStr, int start, int rows,
+    public SolrDocIterator(SolrServer solr, String queryStr, int start, int rows, String sort,
                            String...fields){
         this.solr = solr;
         this.nextStart = start;
         this.query = new SolrQuery(queryStr);
         this.query.setRows(rows);
-        if (fields.length > 0) {
+        if (fields != null && fields.length > 0) {
             this.query.setFields(fields);
+        }
+        if (sort != null && !sort.isEmpty()) {
+            this.query.set("sort", sort);
         }
         this.next = getNext(true);
         this.count = 1;
-    }
-
-    public void setFields(String...fields) {
-        this.query.setFields(fields);
     }
 
     public long getNumFound() {
@@ -105,15 +104,4 @@ public class SolrDocIterator implements Iterator<SolrDocument> {
         return count < limit && curPage.hasNext() ? curPage.next() : null;
     }
 
-    public static void main(String[] args) {
-        SolrDocIterator iterator = new SolrDocIterator("http://localhost:8983/solr/", "subType:xml", 0, 100, "id");
-        iterator.setLimit(10);
-
-        int c = 0;
-        while (iterator.hasNext()){
-            System.out.println(iterator.next());
-            c++;
-        }
-        System.out.println(c);
-    }
 }

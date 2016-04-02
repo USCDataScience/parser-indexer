@@ -1,0 +1,7 @@
+solr.url = http://localhost:8983/solr/imagecatdev
+solr.qry = *:*
+solr.sort = indexedAt asc
+solr.start = 0
+solr.rows = 10
+solr.fl = id,dates,ner_weapon_name_ts_md,ner_weapon_name_t_md,ner_weapon_type_ts_md,ner_weapon_type_t_md,contentType
+solr.limit = 25

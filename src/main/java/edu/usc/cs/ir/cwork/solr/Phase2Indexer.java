@@ -116,7 +116,7 @@ public class Phase2Indexer {
         HttpSolrServer solrServer = new HttpSolrServer(srcSolr.toString());
         solrServer.setConnectionTimeout(5*1000);
         SolrDocIterator docs = new SolrDocIterator(solrServer, queryStr,
-                start, batchSize, copyFields);
+                start, batchSize, null, copyFields);
         parseAndUpdate(docs);
 
     }

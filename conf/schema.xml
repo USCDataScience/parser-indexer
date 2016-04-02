@@ -362,7 +362,7 @@
         <field name="organizations" type="string" stored="true" indexed="true" multiValued="true"/>
         <field name="organizations_ts" type="text_general" stored="false" indexed="true" multiValued="true"/>
         <field name="dates" type="date" stored="true" indexed="true" multiValued="true"/>
-
+        <field name="dates_aggr" type="date" stored="true" indexed="true" multiValued="true"/>
 
         <field name="cities" type="string" indexed="true" stored="true" multiValued="true"/>
         <field name="states" type="string" indexed="true" stored="true" multiValued="true"/>
@@ -372,7 +372,6 @@
 
         <field name="outlinks" type="url" indexed="true" stored="true" multiValued="true"/>
         <field name="outpaths" type="string" indexed="true" stored="true" multiValued="true"/>
-
 
 
         <!-- Page Ranks-->
