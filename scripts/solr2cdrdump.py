@@ -59,7 +59,7 @@ class Solr(object):
     Solr client for querying docs
     '''
     def __init__(self, solr_url):
-        self.query_url = solr_url + ('' if solr_url.endswith('/') else '/' ) + 'select'
+        self.query_url = solr_url.rstrip('/') + '/' + 'select'
 
     def query(self, query='*:*', start=0, rows=20, **kwargs):
         '''
