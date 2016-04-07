@@ -91,7 +91,7 @@ class Solr(object):
 
 
     def get_doc(self, id):
-        qry = "id:\"%s\"" % id
+        qry = 'id:"{0}"'.format(id)
         docs = self.query(query=qry, rows=1)
         return docs[0] if docs else None
 
