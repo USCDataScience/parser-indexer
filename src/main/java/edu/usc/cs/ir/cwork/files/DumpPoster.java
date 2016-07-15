@@ -10,30 +10,24 @@ import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.HttpSolrServer;
 import org.apache.solr.client.solrj.response.UpdateResponse;
 import org.apache.solr.common.SolrException;
+import org.json.JSONObject;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 
 /**
  * Created by tg on 12/11/15.
  */
-public class DumpPoster implements Runnable {
+public class DumpPoster implements Runnable, Closeable {
 
     public static final Logger LOG = LoggerFactory.getLogger(DumpPoster.class);
 
@@ -44,8 +38,12 @@ public class DumpPoster implements Runnable {
     protected File listFile;
 
 
-    @Option(name = "-solr", usage = "Solr URL", required = true)
+    @Option(name = "-solr", usage = "Solr URL where the output should be stored. Ignore if no solr index required.")
     protected URL solrUrl;
+
+    @Option(name = "-out", usage = "Output File where the output should be stored. Ignore if no file dump required.")
+    protected File outputFile;
+
 
     @Option(name = "-threads", usage = "Number of Threads")
     protected int nThreads = 5;
@@ -57,6 +55,9 @@ public class DumpPoster implements Runnable {
     protected int batchSize = 500;
 
     protected ExecutorService service;
+
+    private HttpSolrServer solr;
+    private BufferedWriter out;
 
     /**
      * task for parsing docs
@@ -86,16 +87,77 @@ public class DumpPoster implements Runnable {
         return service;
     }
 
+
+    private void init(){
+        if (solrUrl != null) {
+            solr = new HttpSolrServer(this.solrUrl.toString());
+            solr.setConnectionTimeout(5*1000);
+        }
+        if (outputFile != null){
+            if (outputFile.exists()){
+                throw new IllegalArgumentException("File " + outputFile + " already exists");
+            }
+            try {
+                out = new BufferedWriter(new FileWriter(outputFile));
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+        }
+    }
+
+    @Override
+    public void close() throws IOException {
+
+        if (solr != null){
+            try {
+                LOG.info("Committing before exit");
+                UpdateResponse response = solr.commit();
+                LOG.info("Commit response : {}", response);
+            } catch (SolrServerException e) {
+                e.printStackTrace();
+            }
+            solr.shutdown();
+        }
+
+        if (out != null) {
+            out.close();
+        }
+    }
+
+
+    public void addBeans(List<ContentBean> buffer)
+        throws IOException, SolrServerException {
+        if (solr != null) {
+            solr.addBeans(buffer);
+        }
+        if (out != null){
+            for (ContentBean bean : buffer) {
+                out.write(new JSONObject(bean).toString());
+                out.write("\n");
+            }
+        }
+    }
+
+
+    public void addBean(ContentBean bean)
+        throws IOException, SolrServerException {
+        if (solr != null) {
+            solr.addBean(bean);
+        }
+        if (out != null){
+            out.write(new JSONObject(bean).toString());
+            out.write("\n");
+        }
+    }
+
     @Override
     public void run() {
-
+        init();
         Iterator<File> files = getInputFiles();
         long st = System.currentTimeMillis();
         long count = 0;
         long delay = 2 * 1000;
 
-        HttpSolrServer destSolr = new HttpSolrServer(this.solrUrl.toString());
-        destSolr.setConnectionTimeout(5*1000);
 
         GroupedIterator<File> groupedDocs = new GroupedIterator<>(files, nThreads);
         List<Future<ContentBean>> futures = new ArrayList<>(nThreads);
@@ -131,7 +193,7 @@ public class DumpPoster implements Runnable {
                 }
 
                 if (buffer.size() >= batchSize) {
-                    destSolr.addBeans(buffer);
+                    addBeans(buffer);
                     buffer.clear();
                 }
 
@@ -152,7 +214,7 @@ public class DumpPoster implements Runnable {
                 int errCount = 0;
                 for (ContentBean bean : buffer) {
                     try {
-                        destSolr.addBean(bean);
+                        addBean(bean);
                     } catch (Exception e1) {
                         errCount++;
                         e1.printStackTrace();
@@ -173,11 +235,10 @@ public class DumpPoster implements Runnable {
         try {
             //left out
             if (!buffer.isEmpty()) {
-                destSolr.addBeans(buffer);
+                addBeans(buffer);
             }
-            LOG.info("Committing before exit. Num Docs = {}", count);
-            UpdateResponse response = destSolr.commit();
-            LOG.info("Commit response : {}", response);
+            LOG.info("Num Docs = {}", count);
+
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
@@ -220,21 +281,27 @@ public class DumpPoster implements Runnable {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws IOException {
         //args = "-solr http://localhost:8983/solr/collection3 -in /home/tg/tmp/committer-index.html -batch 10".split(" ");
 
-        DumpPoster poster = new DumpPoster();
-        CmdLineParser parser = new CmdLineParser(poster);
-        try {
-            parser.parseArgument(args);
-            if (poster.file == null && poster.listFile == null) {
-                throw new CmdLineException(parser, "Either -in or -list is required");
+        try(DumpPoster poster = new DumpPoster()) {
+            CmdLineParser parser = new CmdLineParser(poster);
+            try {
+                parser.parseArgument(args);
+                if (poster.file == null && poster.listFile == null) {
+                    throw new CmdLineException(parser,
+                        "Either -in or -list is required.");
+                }
+                if (poster.solrUrl == null && poster.outputFile == null) {
+                    throw new CmdLineException(parser,
+                        "Either -solr or -out is required.");
+                }
+            } catch (CmdLineException e) {
+                System.out.println(e.getMessage());
+                parser.printUsage(System.out);
+                return;
             }
-        } catch (CmdLineException e) {
-            System.out.println(e.getMessage());
-            parser.printUsage(System.out);
-            return;
+            poster.run();
         }
-        poster.run();
     }
 }
