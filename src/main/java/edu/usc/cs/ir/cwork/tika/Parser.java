@@ -20,11 +20,14 @@ import org.apache.tika.config.TikaConfig;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.io.TikaInputStream;
 import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.ParseContext;
 import org.apache.tika.parser.geo.topic.gazetteer.GeoGazetteerClient;
 import org.apache.tika.parser.geo.topic.gazetteer.Location;
 import org.apache.tika.parser.ner.NamedEntityParser;
 import org.apache.tika.parser.ner.corenlp.CoreNLPNERecogniser;
 import org.apache.tika.parser.ner.regex.RegexNERecogniser;
+import org.apache.tika.sax.ToXMLContentHandler;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.CmdLineParser;
 import org.kohsuke.args4j.Option;
@@ -67,6 +70,8 @@ public class Parser {
     public static final String PHASE1_CONF = "tika-config-phase1.xml";
     public static final String PHASE2_CONF = "tika-config-phase2.xml";
     public static final String DEFAULT_CONF = "tika-config.xml";
+    public static final String XML_CONTENT = "tika.xml.content";
+
     private static final com.joestelmach.natty.Parser NATTY_PARSER =
             new com.joestelmach.natty.Parser();
     private static Parser PHASE1;
@@ -76,6 +81,7 @@ public class Parser {
     private GeoGazetteerClient geoClient;
     private ParseUtil parseUtil;
     private FieldMapper mapper = FieldMapper.create();
+    private boolean xmlContent = false;
 
     public Parser(InputStream configStream) {
         try {
@@ -98,6 +104,8 @@ public class Parser {
             } else {
                 LOG.warn("Nutch Home not set");
             }
+            // XML Content
+            xmlContent = System.getProperties().containsKey(XML_CONTENT);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
@@ -355,7 +363,20 @@ public class Parser {
                                  TikaInputStream stream)
             throws IOException, TikaException {
         Map<String, Object> mdFields = new HashMap<>();
-        String content = tika.parseToString(stream, md);
+
+        String content = "";
+        if (xmlContent) {
+            try {
+
+                ToXMLContentHandler handler = new ToXMLContentHandler();
+                tika.getParser().parse(stream, handler, md, new ParseContext());
+                content = handler.toString();
+            } catch (SAXException e) {
+                e.printStackTrace();
+            }
+        } else {
+            content = tika.parseToString(stream, md);
+        }
         bean.setContent(content);
         try {
             for (String name : md.names()) {
