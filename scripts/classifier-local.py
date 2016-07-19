@@ -163,8 +163,11 @@ class Classifier(object):
         self.sess = tf.Session()
         self.softmax_tensor = self.sess.graph.get_tensor_by_name('softmax:0')
         self.node_lookup = NodeLookup()
+    
+    def get_labels(self):
+        return self.node_lookup.node_lookup
 
-    def classify(self, image_data, topk, debug=False):
+    def classify(self, image_data, topk=1010):
         predictions = self.sess.run(self.softmax_tensor,
                                     {'DecodeJpeg/contents:0': image_data})
 
@@ -174,8 +177,6 @@ class Classifier(object):
         for node_id in top_k:
             human_string = self.node_lookup.id_to_string(node_id)
             score = predictions[node_id]
-            if debug:
-                print('%s (score = %.5f)' % (human_string, score))
             res.append((human_string, score))
         return res
 
@@ -194,21 +195,34 @@ def process_all():
     count = 0
     with open(FLAGS.images) as input, open(FLAGS.out, 'ab', 1) as out:
         input = map(lambda x: x.strip(), input)
+        fields = list(classifier.get_labels().values())
+        fields.insert(0, 'path')
+        out = csv.DictWriter(out, fieldnames=fields, extrasaction='ignore')
+        out.writeheader()
         for p in input:
             if not os.path.exists(p):
                 log("Skip %s" % p)
                 continue
-            data = tf.gfile.FastGFile(p, 'rb').read()
-            labels = classifier.classify(data, topk=topk)
-            objects = [l for l, _ in labels]
-            confidence = [float(c) for _, c in labels]
-            res = {'path': p, 'objects': objects, 'confidence': confidence}
-            out.write(json.dumps(res))
-            out.write("\n")
-            count += 1
-            if curr_tm() - st > delay:
-                st = curr_tm()
-                print("%d :: %d " % (st, count))
+            try:
+                data = tf.gfile.FastGFile(p, 'rb').read()
+                labels = classifier.classify(data)
+                row = dict(labels)
+                row['path'] = p
+                out.writerow(row)
+                '''
+                objects = [l for l, _ in labels]
+                confidence = [float(c) for _, c in labels]
+                res = {'path': p, 'objects': objects, 'confidence': confidence}
+                out.write(json.dumps(res))
+                out.write("\n")
+                '''
+                count += 1
+                if curr_tm() - st > delay:
+                    st = curr_tm()
+                    print("%d :: %d " % (st, count))
+                
+            except Exception as e:
+                print("Error, Skipped : %s, Cause %s" % (p, e))
 
 def main(_):
     maybe_download_and_extract()
