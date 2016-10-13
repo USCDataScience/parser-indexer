@@ -5,8 +5,6 @@ import sys, os, csv, time, pickle, hashlib, math
 from collections import defaultdict as ddict
 from pprint import pprint
 
-import logging
-logging.basicConfig(level=logging.DEBUG)
 log_delay = 2000
 
 def hash_string(s):
@@ -44,16 +42,12 @@ def aggregate(obj_confs):
 def generate_solr_updates(solr, imgdb):
     # outpaths:*&fl=id,outpaths,indexedAt&sort=indexedAt%20asc
     docs = solr.query_iterator(query="mainType:text OR contentType:/.*ml.*/", fl="id,outpaths", sort="indexedAt asc", rows=500)
-    count = 0
     # filter out the docs without outlinks
     docs = filter(lambda x: 'outpaths' in x and x['outpaths'],  docs)
     for doc in docs:
         children = map(hash_string, doc['outpaths']) # hash the strings
         images = list(filter(lambda x: x in imgdb, children)) # filter the images which are there in our cache
         if images:
-            count += 1
-            if count > 100:
-                break
             object_confs = map(lambda x: imgdb[x], images)
             #print(doc['id'])
             res = aggregate(object_confs)
@@ -80,8 +74,3 @@ if __name__ == '__main__':
     updates = generate_solr_updates(solr, data)
     count, res = solr.post_iterator(updates, commit=True, buffer_size=1000)
     print("Res : %s; count=%d" %(res, count))
-    '''
-    from pprint import pprint
-    for u in updates:
-      pprint(u)
-    '''
