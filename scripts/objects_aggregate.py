@@ -4,6 +4,9 @@ from solr import Solr, current_milli_time
 import sys, os, csv, time, pickle, hashlib, math
 from collections import defaultdict as ddict
 from pprint import pprint
+import sys
+reload(sys)  # Reload does the trick!
+sys.setdefaultencoding('UTF8')
 
 log_delay = 2000
 
@@ -43,19 +46,33 @@ def generate_solr_updates(solr, imgdb):
     # outpaths:*&fl=id,outpaths,indexedAt&sort=indexedAt%20asc
     docs = solr.query_iterator(query="mainType:text OR contentType:/.*ml.*/", fl="id,outpaths", sort="indexedAt asc", rows=500)
     # filter out the docs without outlinks
-    docs = filter(lambda x: 'outpaths' in x and x['outpaths'],  docs)
+    no_outs, oks, no_imgs = 0, 0, 0
+    t1 = current_milli_time()
     for doc in docs:
+        if current_milli_time() - t1 > log_delay:
+            t1 = current_milli_time()
+            print("OKs:", oks, " No Images:", no_imgs, " No out links", no_outs)
+
+        if not doc.get('outpaths'):
+            no_outs += 1
+            continue
+        
         children = map(hash_string, doc['outpaths']) # hash the strings
         images = list(filter(lambda x: x in imgdb, children)) # filter the images which are there in our cache
-        if images:
-            object_confs = map(lambda x: imgdb[x], images)
-            #print(doc['id'])
-            res = aggregate(object_confs)
-            objs, confs = sorted(res, key=res.get, reverse=True), sorted(res.values(), reverse=True)
-            yield {
-                'id': doc['id'],
-                'confidence': {'set': confs},
-                'objects': {'set': objs}
+        
+        if not images:
+            no_imgs += 1
+            continue
+
+        object_confs = map(lambda x: imgdb[x], images)
+        #print(doc['id'], len(images))
+        res = aggregate(object_confs)
+        objs, confs = sorted(res, key=res.get, reverse=True), sorted(res.values(), reverse=True)
+        oks += 1
+        yield {
+            'id': doc['id'],
+            'confidence': {'set': confs},
+            'objects': {'set': objs}
             }
 
 if __name__ == '__main__':
