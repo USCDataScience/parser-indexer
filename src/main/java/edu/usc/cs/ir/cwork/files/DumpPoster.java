@@ -3,7 +3,6 @@ package edu.usc.cs.ir.cwork.files;
 import edu.usc.cs.ir.cwork.solr.ContentBean;
 import edu.usc.cs.ir.cwork.tika.Parser;
 import edu.usc.cs.ir.cwork.util.FileIterator;
-import edu.usc.cs.ir.cwork.util.GroupedIterator;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.LineIterator;
 import org.apache.solr.client.solrj.SolrServerException;
@@ -17,12 +16,28 @@ import org.kohsuke.args4j.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.*;
+import java.io.BufferedWriter;
+import java.io.Closeable;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
-import java.util.concurrent.*;
+import java.util.Queue;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Created by tg on 12/11/15.
@@ -46,7 +61,7 @@ public class DumpPoster implements Runnable, Closeable {
 
 
     @Option(name = "-threads", usage = "Number of Threads")
-    protected int nThreads = 5;
+    protected int nThreads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
 
     @Option(name = "-timeout", usage = "task timeout. The parser should finish within this time millis")
     protected long threadTimeout = 15 * 1000;
@@ -58,6 +73,7 @@ public class DumpPoster implements Runnable, Closeable {
 
     private HttpSolrServer solr;
     private BufferedWriter out;
+    private final Queue<Future<ContentBean>> queue = new LinkedList<>();
 
     /**
      * task for parsing docs
@@ -126,7 +142,7 @@ public class DumpPoster implements Runnable, Closeable {
 
 
     public void addBeans(List<ContentBean> buffer)
-        throws IOException, SolrServerException {
+            throws IOException, SolrServerException {
         if (solr != null) {
             solr.addBeans(buffer);
         }
@@ -135,12 +151,13 @@ public class DumpPoster implements Runnable, Closeable {
                 out.write(new JSONObject(bean).toString());
                 out.write("\n");
             }
+            out.flush();
         }
     }
 
 
     public void addBean(ContentBean bean)
-        throws IOException, SolrServerException {
+            throws IOException, SolrServerException {
         if (solr != null) {
             solr.addBean(bean);
         }
@@ -150,102 +167,147 @@ public class DumpPoster implements Runnable, Closeable {
         }
     }
 
+    /**
+     * ConsumeTask for collecting results from threads and sending to the output solr or dump
+     */
+    private class ConsumeTask implements Runnable {
+
+        private final Runnable closeHook;
+        private final AtomicBoolean producerDone = new AtomicBoolean(false);
+        private final List<ContentBean> buffer = new ArrayList<>();
+
+
+        private ConsumeTask(Runnable closeHook) {
+            this.closeHook = closeHook;
+        }
+
+        void setProducerDone(boolean producerDone) {
+            this.producerDone.set(producerDone);
+        }
+
+        @Override
+        public void run() {
+            System.out.println("ConsumeTask started");
+            long st = System.currentTimeMillis();
+            long count = 0;
+            long delay = 2 * 1000;
+            while (true) {
+                while (!queue.isEmpty()) {
+                    try{
+                        Future<ContentBean> future = queue.remove();
+                        count++;
+                        try {
+                            ContentBean result = future.get(threadTimeout, TimeUnit.MILLISECONDS);
+                            if (result != null) {
+                                buffer.add(result);
+                            }
+                        } catch (InterruptedException | ExecutionException e) {
+                            LOG.error(e.getMessage(), e);
+                        } catch (TimeoutException e) {
+                            // didnt finish
+                            future.cancel(true);
+                            LOG.warn("Cancelled a parse task, it didnt complete in time");
+                        }
+
+                        if (buffer.size() >= batchSize) {
+                            DumpPoster.this.addBeans(buffer);
+                            buffer.clear();
+                        }
+
+                        if (System.currentTimeMillis() - st > delay) {
+                            LOG.info("Num Docs : {}", count);
+                            st = System.currentTimeMillis();
+                        }
+
+                    } catch (SolrException e) {
+                        LOG.error(e.getMessage(), e);
+                        try {
+                            LOG.warn("Going to sleep for sometime");
+                            Thread.sleep(10000);
+                        } catch (InterruptedException e1) {
+                            e1.printStackTrace();
+                        }
+                        LOG.warn("Woke Up! Going to add docs one by one");
+                        int errCount = 0;
+                        for (ContentBean bean : buffer) {
+                            try {
+                                addBean(bean);
+                            } catch (Exception e1) {
+                                errCount++;
+                                e1.printStackTrace();
+                            }
+                        }
+                        LOG.info("Clearing the buffer. Errors :{}", errCount);
+                        //possibly an error in documents
+                        buffer.clear();
+                    } catch (Exception e){
+                        LOG.warn(e.getMessage(), e);
+                    }
+                }
+                if (queue.isEmpty() && producerDone.get()){
+                    break;
+                } else { //queue is empty but producer is not done yet? wait a second!
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+            try {
+                //left out
+                if (!buffer.isEmpty()) {
+                    DumpPoster.this.addBeans(buffer);
+                }
+                LOG.info("Num Docs = {}", count);
+
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            System.out.println("ConsumeTask done. Calling close hook");
+            closeHook.run();
+        }
+    }
+
     @Override
     public void run() {
         init();
         Iterator<File> files = getInputFiles();
-        long st = System.currentTimeMillis();
-        long count = 0;
-        long delay = 2 * 1000;
-
-
-        GroupedIterator<File> groupedDocs = new GroupedIterator<>(files, nThreads);
-        List<Future<ContentBean>> futures = new ArrayList<>(nThreads);
-        List<ContentBean> buffer = new ArrayList<>();
         Parser parser = Parser.getInstance();
-        while (groupedDocs.hasNext()) {
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+                nThreads, nThreads, 5, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(nThreads * 20));
+        Runnable closeHook = () ->  {
+            LOG.info("Shutting down the pool");
+            pool.shutdown();
+        };
+        ConsumeTask consumeTask = new ConsumeTask(closeHook);
+        Thread consumerThread = new Thread(consumeTask);
+        consumerThread.start();
+        while (files.hasNext()){
+            File next = files.next();
+            ParseTask task = new ParseTask(next, parser);
+            Future<ContentBean> future;
             try {
-                List<File> group = groupedDocs.next();
-                futures.clear();
-                for (File doc : group) {
-                    ParseTask task = new ParseTask(doc, parser);
-                    Future<ContentBean> future = getExecutors().submit(task);
-                    futures.add(future);
-                    count++;
-                }
-
-                // collect results
-                for (Future<ContentBean> future : futures) {
+                future = pool.submit(task);
+            } catch (RejectedExecutionException e){
+                while (pool.getQueue().size() > 2 * nThreads) {
                     try {
-                        ContentBean result = future.get(threadTimeout, TimeUnit.MILLISECONDS);
-                        if (result != null) {
-                            buffer.add(result);
-                        }
-                    } catch (InterruptedException e) {
-                        LOG.error(e.getMessage());
-                    } catch (ExecutionException e) {
-                        LOG.error(e.getMessage(), e);
-                    } catch (TimeoutException e) {
-                        // didnt finish
-                        future.cancel(true);
-                        LOG.warn("Cancelled a parse task, it didnt complete in time");
-                    }
-                }
-
-                if (buffer.size() >= batchSize) {
-                    addBeans(buffer);
-                    buffer.clear();
-                }
-
-                if (System.currentTimeMillis() - st > delay) {
-                    String lastPath = group.isEmpty() ? "EMPTY" : group.get(group.size() - 1).getPath();
-                    LOG.info("Num Docs : {}, Last file: {}", count, lastPath);
-                    st = System.currentTimeMillis();
-                }
-            } catch (SolrException e) {
-                LOG.error(e.getMessage(), e);
-                try {
-                    LOG.warn("Going to sleep for sometime");
-                    Thread.sleep(10000);
-                } catch (InterruptedException e1) {
-                    e1.printStackTrace();
-                }
-                LOG.warn("Woke Up! Going to add docs one by one");
-                int errCount = 0;
-                for (ContentBean bean : buffer) {
-                    try {
-                        addBean(bean);
-                    } catch (Exception e1) {
-                        errCount++;
+                        Thread.sleep(100);
+                    } catch (InterruptedException e1) {
                         e1.printStackTrace();
                     }
                 }
-                LOG.info("Clearing the buffer. Errors :{}", errCount);
-                //possibly an error in documents
-                buffer.clear();
-            } catch (Exception e){
-                LOG.error(e.getMessage(), e);
-                try {
-                    Thread.sleep(4000);
-                } catch (InterruptedException e1) {
-                    e1.printStackTrace();
-                }
+                future = pool.submit(task);
+                LOG.info("Last File:{}", next.getAbsolutePath());
             }
+            queue.add(future);
         }
+        consumeTask.setProducerDone(true);
         try {
-            //left out
-            if (!buffer.isEmpty()) {
-                addBeans(buffer);
-            }
-            LOG.info("Num Docs = {}", count);
-
-        } catch (Exception e) {
+            consumerThread.join();
+        } catch (InterruptedException e) {
             e.printStackTrace();
-        } finally {
-            if (service != null) {
-                System.out.println("Shutting down the thread pool");
-                service.shutdown();
-            }
         }
     }
 
@@ -262,17 +324,17 @@ public class DumpPoster implements Runnable, Closeable {
             try {
                 LineIterator iterator = FileUtils.lineIterator(listFile);
 
-            return new Iterator<File>() {
-                @Override
-                public boolean hasNext() {
-                    return iterator.hasNext();
-                }
+                return new Iterator<File>() {
+                    @Override
+                    public boolean hasNext() {
+                        return iterator.hasNext();
+                    }
 
-                @Override
-                public File next() {
-                    return new File(iterator.next());
-                }
-            };
+                    @Override
+                    public File next() {
+                        return new File(iterator.next());
+                    }
+                };
             } catch (IOException e) {
                 throw new RuntimeException(e);
             }
